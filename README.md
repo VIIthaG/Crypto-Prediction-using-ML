@@ -1,7 +1,13 @@
 # Crypto-Prediction-using ML
 
-First, you need to set up your CSVs or whatever files you're working with.
-Next, make sure that you absolutely get all the paths correct otherwise the code will not run.
-download all required dependencies and packages and set up Tensorboard for the GUI features that come with it, but its up to you if you really think you need it.
-If you do, then make sure to downgrade python to the version that is supported by tensorboard.
-Run more epochs to potentially get a better prediction rate, although that comes at the cost of computing power
+- Set up your CSV files: make sure all required data files (e.g., BTC-USD.csv, LTC-USD.csv) are prepared and placed in the correct directory.
+
+- Verify all file paths: double-check every path in the code to avoid errors due to incorrect locations.
+
+- Install all required dependencies: run pip install pandas numpy scikit-learn tensorflow to get everything needed.
+
+- Optional – set up TensorBoard: if you want to visualize training (loss, accuracy, etc.), install it with pip install tensorboard.
+
+- TensorBoard compatibility: if you're using an older TensorFlow version, you might need to downgrade Python (e.g., to 3.10) for it to work correctly.
+
+- Consider increasing the number of epochs: more training epochs can improve prediction results but will use more computing resources and may cause overfitting if unchecked.
