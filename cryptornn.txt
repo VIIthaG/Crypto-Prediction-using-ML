@@ -1,0 +1,177 @@
+import pandas as pd
+from collections import deque
+import random
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, LSTM, BatchNormalization
+from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint
+import time
+from sklearn import preprocessing
+
+SEQ_LEN = 60  # how long of a preceding sequence to collect for RNN
+FUTURE_PERIOD_PREDICT = 3  # how far into the future are we trying to predict?
+RATIO_TO_PREDICT = "LTC-USD"
+EPOCHS = 10  # how many passes through our data
+BATCH_SIZE = 64  # how many batches? Try smaller batch if you're getting OOM (out of memory) errors.
+NAME = f"{SEQ_LEN}-SEQ-{FUTURE_PERIOD_PREDICT}-PRED-{int(time.time())}"
+
+
+def classify(current, future):
+    return 1 if float(future) > float(current) else 0  # Buy if future price is higher
+
+
+def preprocess_df(df):
+    df = df.drop("future", axis=1)  # don't need this anymore.
+
+    for col in df.columns:  # normalize all columns except the target
+        if col != "target":
+            df[col] = df[col].pct_change()
+            df.dropna(inplace=True)  # remove NaNs
+            df[col] = preprocessing.scale(df[col].values)  # scale values
+
+    df.dropna(inplace=True)  # cleanup again
+
+    sequential_data = []  # to store the sequences
+    prev_days = deque(maxlen=SEQ_LEN)  # store up to SEQ_LEN days
+
+    for i in df.values:  # iterate over the values
+        prev_days.append([n for n in i[:-1]])  # store all but the target
+        if len(prev_days) == SEQ_LEN:  # make sure we have enough days
+            sequential_data.append([np.array(prev_days), i[-1]])  # append the sequence
+
+    random.shuffle(sequential_data)  # shuffle for randomness
+
+    buys = []  # store buy sequences and targets
+    sells = []  # store sell sequences and targets
+
+    for seq, target in sequential_data:  # iterate through the data
+        if target == 0:
+            sells.append([seq, target])  # not a buy
+        elif target == 1:
+            buys.append([seq, target])  # is a buy
+
+    random.shuffle(buys)  # shuffle buys and sells
+    random.shuffle(sells)
+
+    lower = min(len(buys), len(sells))  # get the shorter length
+
+    buys = buys[:lower]  # trim to the shortest length
+    sells = sells[:lower]
+
+    sequential_data = buys + sells  # combine
+    random.shuffle(sequential_data)  # final shuffle
+
+    X = []
+    y = []
+
+    for seq, target in sequential_data:  # create X and y
+        X.append(seq)
+        y.append(target)
+
+    return np.array(X), np.array(y)  # ensure both are numpy arrays
+
+
+main_df = pd.DataFrame()  # start with an empty DataFrame
+
+ratios = ["BTC-USD", "LTC-USD", "BCH-USD", "ETH-USD"]  # the 4 ratios we want to consider
+for ratio in ratios:
+    print(ratio)
+    dataset = f"C:/Users/GtothaV/Desktop/crypto_data/{ratio}.csv"  # path to the file
+    df = pd.read_csv(dataset, names=['time', 'low', 'high', 'open', 'close', 'volume'])  # read data
+
+    # rename columns to include the ticker
+    df.rename(columns={"close": f"{ratio}_close", "volume": f"{ratio}_volume"}, inplace=True)
+
+    df.set_index("time", inplace=True)  # set time as index
+    df = df[[f"{ratio}_close", f"{ratio}_volume"]]  # keep only relevant columns
+
+    if len(main_df) == 0:  # if empty, initialize
+        main_df = df
+    else:
+        main_df = main_df.join(df)  # join with main DataFrame
+
+main_df.fillna(method="ffill", inplace=True)  # forward fill
+main_df.dropna(inplace=True)
+
+# Prepare future predictions
+main_df['future'] = main_df[f'{RATIO_TO_PREDICT}_close'].shift(-FUTURE_PERIOD_PREDICT)
+main_df['target'] = list(map(classify, main_df[f'{RATIO_TO_PREDICT}_close'], main_df['future']))
+
+main_df.dropna(inplace=True)
+
+# Split data for validation
+times = sorted(main_df.index.values)
+last_5pct = sorted(main_df.index.values)[-int(0.05 * len(times))]
+
+validation_main_df = main_df[(main_df.index >= last_5pct)]
+main_df = main_df[(main_df.index < last_5pct)]
+
+train_x, train_y = preprocess_df(main_df)
+validation_x, validation_y = preprocess_df(validation_main_df)
+
+# Check shapes
+print("Train X shape:", train_x.shape)  # Should be (samples, SEQ_LEN, features)
+print("Validation X shape:", validation_x.shape)  # Should be (samples, SEQ_LEN, features)
+
+# Check counts of buys and sells using numpy
+unique_train, counts_train = np.unique(train_y, return_counts=True)
+unique_validation, counts_validation = np.unique(validation_y, return_counts=True)
+
+train_counts = dict(zip(unique_train, counts_train))
+validation_counts = dict(zip(unique_validation, counts_validation))
+
+print(f"Train data: {len(train_x)} validation: {len(validation_x)}")
+print(f"Don't buys: {train_counts.get(0, 0)}, buys: {train_counts.get(1, 0)}")
+print(f"VALIDATION Don't buys: {validation_counts.get(0, 0)}, buys: {validation_counts.get(1, 0)}")
+
+# Model definition
+model = Sequential()
+model.add(LSTM(128, input_shape=(train_x.shape[1:]), return_sequences=True))
+model.add(Dropout(0.2))
+model.add(BatchNormalization())
+
+model.add(LSTM(128, return_sequences=True))
+model.add(Dropout(0.1))
+model.add(BatchNormalization())
+
+model.add(LSTM(128))
+model.add(Dropout(0.2))
+model.add(BatchNormalization())
+
+model.add(Dense(32, activation='relu'))
+model.add(Dropout(0.2))
+
+model.add(Dense(2, activation='softmax'))  # Output layer for binary classification
+
+opt = tf.keras.optimizers.Adam(learning_rate=0.001, decay=1e-6)
+
+# Compile model
+model.compile(
+    loss='sparse_categorical_crossentropy',
+    optimizer=opt,
+    metrics=['accuracy']
+)
+
+tensorboard = TensorBoard(log_dir="logs/{}".format(NAME))
+
+# Define checkpoint
+filepath = "models/RNN_Final-{epoch:02d}-{val_accuracy:.3f}.keras"  # Save best model
+checkpoint = ModelCheckpoint(filepath, monitor='val_accuracy', verbose=1, save_best_only=True, mode='max')
+
+# Train model
+history = model.fit(
+    train_x, train_y,
+    batch_size=BATCH_SIZE,
+    epochs=EPOCHS,
+    validation_data=(validation_x, validation_y),
+    callbacks=[tensorboard, checkpoint],
+)
+
+# Evaluate model
+score = model.evaluate(validation_x, validation_y, verbose=0)
+print('Test loss:', score[0])
+print('Test accuracy:', score[1])
+
+# Save final model
+model.save(f"models/{NAME}.keras")
