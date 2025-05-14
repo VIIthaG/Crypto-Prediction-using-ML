@@ -1,4 +1,4 @@
-# Crypto-Prediction-using ML (Setup and Docs)
+# Crypto-Prediction-using ML (Setup)
 
 - Set up your CSV files: make sure all required data files (e.g., BTC-USD.csv, LTC-USD.csv) are prepared and placed in the correct directory.
 
